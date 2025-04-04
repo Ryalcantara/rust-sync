@@ -1,3 +1,5 @@
+// Corrected src/models/mod.rs file
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AttendanceLog {
     pub log_id: i32,
@@ -9,4 +11,23 @@ pub struct AttendanceLog {
     pub hr_approval: Option<String>,
     pub dtr_type: Option<String>,
     pub remarks: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SchedulingRecord {
+    pub scheduling_id: i32,
+    pub date_start: String,
+    pub date_end: String,
+    pub remarks: Option<String>,
+    pub station: Option<String>,
+    pub employee_id: String,
+    pub department: String,
+    pub time_start: String,
+    pub time_end: String,
+    pub updated_at: String,
+    pub created_at: String,
+    pub case: Option<String>,
+    pub remark_2nd: Option<String>,
+    pub display_order: Option<String>,
+    pub display_order_2nd: Option<String>,
 }
