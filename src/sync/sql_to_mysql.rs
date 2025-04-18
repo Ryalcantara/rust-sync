@@ -1,13 +1,30 @@
-// Corrected src/sync/sql_to_mysql.rs file
+// Enhanced src/sync/sql_to_mysql.rs file with real-time transfer visualization
 
 use anyhow::Result;
 use indicatif::ProgressBar;
 use std::collections::HashMap;
 use mysql_async::prelude::*;
+use colored::*;
+use std::time::{Instant, Duration};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use crate::models::AttendanceLog;
 use crate::models::SchedulingRecord;
 
-// Batch synchronize from SQL Server to MySQL
+// Helper to format transfer speed
+fn format_transfer_speed(records: u32, elapsed_secs: f64) -> String {
+    if elapsed_secs < 0.001 {
+        return "N/A".to_string();
+    }
+    let records_per_sec = records as f64 / elapsed_secs;
+    if records_per_sec >= 1000.0 {
+        format!("{:.2} K records/s", records_per_sec / 1000.0)
+    } else {
+        format!("{:.2} records/s", records_per_sec)
+    }
+}
+
+// Batch synchronize from SQL Server to MySQL with enhanced visual feedback
 pub async fn batch_sync_sql_to_mysql(
     mysql_conn: &mut mysql_async::Conn,
     sql_logs: &HashMap<i32, AttendanceLog>,
@@ -22,17 +39,24 @@ pub async fn batch_sync_sql_to_mysql(
     // Settings for batch operations
     const BATCH_SIZE: usize = 200;
     
+    // Metrics for real-time reporting
+    let start_time = Instant::now();
+    let total_time_insert = Arc::new(std::sync::Mutex::new(Duration::from_secs(0)));
+    let total_time_update = Arc::new(std::sync::Mutex::new(Duration::from_secs(0)));
+    
     // 1. Handle inserts in batches
     let mut inserted = 0;
     
     if !ids_to_insert.is_empty() {
-        progress_bar.set_message(format!("Inserting {} SQL records to MySQL...", ids_to_insert.len()));
+        progress_bar.set_message(format!("🔄 {} → MySQL (INSERT)", "SQL Server".blue()));
         
         // Process in chunks for better performance
-        for chunk in ids_to_insert.chunks(BATCH_SIZE) {
+        for (chunk_idx, chunk) in ids_to_insert.chunks(BATCH_SIZE).enumerate() {
             if chunk.is_empty() {
                 continue;
             }
+            
+            let batch_start = Instant::now();
             
             // Build batch insert with multiple VALUES clauses
             let mut placeholders = Vec::new();
@@ -70,8 +94,23 @@ pub async fn batch_sync_sql_to_mysql(
             
             transaction.exec_drop(stmt, params).await?;
             
+            let batch_elapsed = batch_start.elapsed();
+            *total_time_insert.lock().unwrap() += batch_elapsed;
+            
             inserted += chunk.len() as u32;
             progress_bar.inc(chunk.len() as u64);
+            
+            if (chunk_idx + 1) % 5 == 0 || (chunk_idx + 1) == ids_to_insert.len().div_ceil(BATCH_SIZE) {
+                let elapsed = start_time.elapsed();
+                let transfer_speed = format_transfer_speed(inserted, elapsed.as_secs_f64());
+                progress_bar.set_message(format!("🔄 {} → MySQL (INSERT) | Batch {}/{} | {} | {}",
+                    "SQL Server".blue(),
+                    chunk_idx + 1, 
+                    ids_to_insert.len().div_ceil(BATCH_SIZE),
+                    format!("{}/{} records", inserted, ids_to_insert.len()).yellow(),
+                    transfer_speed.green()
+                ));
+            }
         }
     }
 
@@ -79,13 +118,16 @@ pub async fn batch_sync_sql_to_mysql(
     let mut updated = 0;
     
     if !ids_to_update.is_empty() {
-        progress_bar.set_message(format!("Updating {} SQL records in MySQL...", ids_to_update.len()));
+        progress_bar.set_message(format!("🔄 {} → MySQL (UPDATE)", "SQL Server".blue()));
+        let update_start = Instant::now();
         
         // Batch updates for efficiency
-        for chunk in ids_to_update.chunks(BATCH_SIZE) {
+        for (chunk_idx, chunk) in ids_to_update.chunks(BATCH_SIZE).enumerate() {
             if chunk.is_empty() {
                 continue;
             }
+            
+            let batch_start = Instant::now();
             
             // For MySQL, we need individual updates for now
             for &id in chunk {
@@ -115,18 +157,44 @@ pub async fn batch_sync_sql_to_mysql(
                 ).await?;
             }
             
+            let batch_elapsed = batch_start.elapsed();
+            *total_time_update.lock().unwrap() += batch_elapsed;
+            
             updated += chunk.len() as u32;
             progress_bar.inc(chunk.len() as u64);
+            
+            if (chunk_idx + 1) % 5 == 0 || (chunk_idx + 1) == ids_to_update.len().div_ceil(BATCH_SIZE) {
+                let update_elapsed = update_start.elapsed();
+                let transfer_speed = format_transfer_speed(updated, update_elapsed.as_secs_f64());
+                progress_bar.set_message(format!("🔄 {} → MySQL (UPDATE) | Batch {}/{} | {} | {}",
+                    "SQL Server".blue(),
+                    chunk_idx + 1, 
+                    ids_to_update.len().div_ceil(BATCH_SIZE),
+                    format!("{}/{} records", updated, ids_to_update.len()).yellow(),
+                    transfer_speed.green()
+                ));
+            }
         }
     }
 
     // Commit the transaction
     transaction.commit().await?;
     
+    // Final statistics
+    let total_elapsed = start_time.elapsed();
+    let total_transfers = inserted + updated;
+    let avg_speed = format_transfer_speed(total_transfers, total_elapsed.as_secs_f64());
+    
+    progress_bar.set_message(format!("✅ SQL → MySQL | {} inserted, {} updated | Avg speed: {}",
+        inserted.to_string().green(),
+        updated.to_string().green(),
+        avg_speed.bright_blue()
+    ));
+    
     Ok((inserted, updated))
 }
 
-// Batch synchronize scheduling records from SQL Server to MySQL
+// Batch synchronize scheduling records from SQL Server to MySQL with enhanced visuals
 pub async fn batch_sync_scheduling_sql_to_mysql(
     mysql_conn: &mut mysql_async::Conn,
     sql_records: &HashMap<i32, SchedulingRecord>,
@@ -141,14 +209,17 @@ pub async fn batch_sync_scheduling_sql_to_mysql(
     // Settings for batch operations
     const BATCH_SIZE: usize = 200;
     
+    // Metrics for real-time reporting
+    let start_time = Instant::now();
+    
     // 1. Handle inserts in batches
     let mut inserted = 0;
     
     if !ids_to_insert.is_empty() {
-        progress_bar.set_message(format!("Inserting {} SQL scheduling records to MySQL...", ids_to_insert.len()));
+        progress_bar.set_message(format!("🔄 {} → MySQL (Scheduling INSERT)", "SQL Server".blue()));
         
         // Process in chunks for better performance
-        for chunk in ids_to_insert.chunks(BATCH_SIZE) {
+        for (chunk_idx, chunk) in ids_to_insert.chunks(BATCH_SIZE).enumerate() {
             if chunk.is_empty() {
                 continue;
             }
@@ -219,17 +290,30 @@ pub async fn batch_sync_scheduling_sql_to_mysql(
             
             inserted += chunk.len() as u32;
             progress_bar.inc(chunk.len() as u64);
+            
+            if (chunk_idx + 1) % 5 == 0 || (chunk_idx + 1) == ids_to_insert.len().div_ceil(BATCH_SIZE) {
+                let elapsed = start_time.elapsed();
+                let transfer_speed = format_transfer_speed(inserted, elapsed.as_secs_f64());
+                progress_bar.set_message(format!("🔄 {} → MySQL (Scheduling INSERT) | Batch {}/{} | {} | {}",
+                    "SQL Server".blue(),
+                    chunk_idx + 1, 
+                    ids_to_insert.len().div_ceil(BATCH_SIZE),
+                    format!("{}/{} records", inserted, ids_to_insert.len()).yellow(),
+                    transfer_speed.green()
+                ));
+            }
         }
     }
 
     // 2. Handle updates in batches too
     let mut updated = 0;
+    let update_start = Instant::now();
     
     if !ids_to_update.is_empty() {
-        progress_bar.set_message(format!("Updating {} SQL scheduling records in MySQL...", ids_to_update.len()));
+        progress_bar.set_message(format!("🔄 {} → MySQL (Scheduling UPDATE)", "SQL Server".blue()));
         
         // Batch updates for efficiency
-        for chunk in ids_to_update.chunks(BATCH_SIZE) {
+        for (chunk_idx, chunk) in ids_to_update.chunks(BATCH_SIZE).enumerate() {
             if chunk.is_empty() {
                 continue;
             }
@@ -285,11 +369,34 @@ pub async fn batch_sync_scheduling_sql_to_mysql(
             
             updated += chunk.len() as u32;
             progress_bar.inc(chunk.len() as u64);
+            
+            if (chunk_idx + 1) % 5 == 0 || (chunk_idx + 1) == ids_to_update.len().div_ceil(BATCH_SIZE) {
+                let update_elapsed = update_start.elapsed();
+                let transfer_speed = format_transfer_speed(updated, update_elapsed.as_secs_f64());
+                progress_bar.set_message(format!("🔄 {} → MySQL (Scheduling UPDATE) | Batch {}/{} | {} | {}",
+                    "SQL Server".blue(),
+                    chunk_idx + 1, 
+                    ids_to_update.len().div_ceil(BATCH_SIZE),
+                    format!("{}/{} records", updated, ids_to_update.len()).yellow(),
+                    transfer_speed.green()
+                ));
+            }
         }
     }
 
     // Commit the transaction
     transaction.commit().await?;
+    
+    // Final statistics
+    let total_elapsed = start_time.elapsed();
+    let total_transfers = inserted + updated;
+    let avg_speed = format_transfer_speed(total_transfers, total_elapsed.as_secs_f64());
+    
+    progress_bar.set_message(format!("✅ SQL → MySQL (Scheduling) | {} inserted, {} updated | Avg speed: {}",
+        inserted.to_string().green(),
+        updated.to_string().green(),
+        avg_speed.bright_blue()
+    ));
     
     Ok((inserted, updated))
 }

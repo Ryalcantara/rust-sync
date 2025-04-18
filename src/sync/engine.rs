@@ -1,13 +1,14 @@
-// Complete src/sync/engine.rs file
+// Enhanced src/sync/engine.rs file with real-time transfer visualization
 
 use anyhow::Result;
 use colored::*;
 use futures_util::future::try_join;
-use indicatif::ProgressBar;
+use indicatif::{MultiProgress, ProgressBar};
 use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 use mysql_async::prelude::*; 
 use crate::models::SchedulingRecord;
+use std::time::Instant;
 
 use crate::database::connection::SqlServerClient;
 use crate::database::mysql::{get_mysql_record_count, fetch_mysql_logs};
@@ -19,16 +20,18 @@ use crate::sync::sql_to_mysql::batch_sync_sql_to_mysql;
 use crate::sync::mysql_to_sql::batch_sync_mysql_to_sql;
 use crate::sync::sql_to_mysql::batch_sync_scheduling_sql_to_mysql;
 use crate::sync::mysql_to_sql::batch_sync_scheduling_mysql_to_sql;
-use crate::ui::{create_spinner, create_progress_bar};
+use crate::ui::{create_spinner, create_progress_bar, create_multi_progress};
 
-// Main synchronization function
+// Main synchronization function with enhanced visuals
 pub async fn optimized_sync_databases(
     sql_client: &mut SqlServerClient,
     mysql_conn: &mut mysql_async::Conn,
     fetch_spinner: ProgressBar,
 ) -> Result<()> {
+    let overall_start = Instant::now();
+    
     // 1. Get the latest sync timestamp from both databases
-    fetch_spinner.set_message("Determining last sync time...".to_string());
+    fetch_spinner.set_message("⏳ Determining last sync time...".to_string());
     
     // Get the most recent sync time from SQL Server - handle NULL explicitly in SQL
     let sql_last_sync: Option<String> = {
@@ -83,8 +86,8 @@ pub async fn optimized_sync_databases(
     };
 
     fetch_spinner.set_message(format!(
-        "Fetching unsynchronized logs since {}...",
-        last_sync_str.as_deref().unwrap_or("beginning")
+        "📡 Fetching unsynchronized logs since {}...",
+        last_sync_str.as_deref().unwrap_or("beginning").green()
     ));
 
     // 2. Fetch only the logs that need synchronization
@@ -111,9 +114,12 @@ pub async fn optimized_sync_databases(
         last_sync_clause
     );
 
+    // Create a multi-progress display
+    let multi_progress = create_multi_progress();
+    
     // Fetch logs from SQL Server and MySQL - parallel fetch
-    let fetch_sql_spinner = create_spinner("Fetching logs from SQL Server...");
-    let fetch_mysql_spinner = create_spinner("Fetching logs from MySQL...");
+    let fetch_sql_spinner = multi_progress.add(create_spinner("📥 Fetching logs from SQL Server..."));
+    let fetch_mysql_spinner = multi_progress.add(create_spinner("📥 Fetching logs from MySQL..."));
     
     // Run both fetch operations in parallel
     let sql_logs_future = fetch_sql_server_logs(sql_client, &sql_query);
@@ -122,16 +128,24 @@ pub async fn optimized_sync_databases(
     // Execute both fetch operations concurrently
     let (sql_logs_result, mysql_logs_result) = try_join(
         async {
+            let start = Instant::now();
             let logs = sql_logs_future.await?;
+            let elapsed = start.elapsed();
             fetch_sql_spinner.finish_with_message(format!(
-                "✅ Fetched {} SQL Server logs", logs.len()
+                "✅ Fetched {} SQL Server logs in {:.2}s", 
+                logs.len().to_string().blue().bold(),
+                elapsed.as_secs_f64().to_string().yellow()
             ));
             Ok::<_, anyhow::Error>(logs)
         },
         async {
+            let start = Instant::now();
             let logs = mysql_logs_future.await?;
+            let elapsed = start.elapsed();
             fetch_mysql_spinner.finish_with_message(format!(
-                "✅ Fetched {} MySQL logs", logs.len()
+                "✅ Fetched {} MySQL logs in {:.2}s", 
+                logs.len().to_string().green().bold(),
+                elapsed.as_secs_f64().to_string().yellow()
             ));
             Ok::<_, anyhow::Error>(logs)
         }
@@ -143,7 +157,7 @@ pub async fn optimized_sync_databases(
     // Double-check for MySQL records by querying a count of all records
     let all_mysql_count = get_mysql_record_count(mysql_conn).await?;
     if all_mysql_count > 0 && mysql_logs.is_empty() {
-        println!("{}", format!("⚠️  Warning: Found {} records in MySQL but none matched sync criteria", all_mysql_count).yellow());
+        println!("{}", format!("⚠️  Warning: Found {} records in MySQL but none matched sync criteria", all_mysql_count).yellow().bold());
     }
 
     // Calculate what logs need to be synced in each direction
@@ -184,39 +198,60 @@ pub async fn optimized_sync_databases(
     if identical_records > 0 {
         println!("{} {} {}", 
             "↪".cyan(),
-            format!("{} records already in sync - skipping these", identical_records).yellow(),
+            format!("{} records already in sync - skipping these", identical_records).yellow().bold(),
             "↩".cyan()
         );
     }
 
-    // Display sync summary
+    // Display sync summary with enhanced visuals
     fetch_spinner.finish_with_message(format!(
         "✅ Analysis complete: {} SQL Server logs, {} MySQL logs",
-        sql_logs.len().to_string().blue(),
-        mysql_logs.len().to_string().blue()
+        sql_logs.len().to_string().blue().bold(),
+        mysql_logs.len().to_string().green().bold()
     ));
     
-    // Show what needs to be synced
-    println!("Sync needed:");
-    println!("  → SQL Server to MySQL: {} new, {} updates", 
-        sql_only_ids.len().to_string().yellow(),
-        need_update_in_mysql.len().to_string().yellow()
+    // Show what needs to be synced with a nice table format
+    println!("{}", "┌─────────────────────────────────────────────────┐".bright_blue());
+    println!("{} {} {}",
+        "│".bright_blue(),
+        " 🔄 SYNC REQUIREMENTS SUMMARY                    ".bold().white().on_blue(),
+        "│".bright_blue()
     );
-    println!("  → MySQL to SQL Server: {} new, {} updates", 
-        mysql_only_ids.len().to_string().yellow(),
-        need_update_in_sql.len().to_string().yellow()
+    println!("{}", "├─────────────────────────────────────────────────┤".bright_blue());
+    println!("{} {:<20} {:<10} {:<10} {}",
+        "│".bright_blue(),
+        "Direction".bold(),
+        "New".bold(),
+        "Updates".bold(),
+        "│".bright_blue()
     );
+    println!("{}", "├─────────────────────────────────────────────────┤".bright_blue());
+    println!("{} {:<20} {:<10} {:<10} {}",
+        "│".bright_blue(),
+        "SQL Server → MySQL".cyan(),
+        sql_only_ids.len().to_string().yellow().bold(),
+        need_update_in_mysql.len().to_string().yellow().bold(),
+        "│".bright_blue()
+    );
+    println!("{} {:<20} {:<10} {:<10} {}",
+        "│".bright_blue(),
+        "MySQL → SQL Server".green(),
+        mysql_only_ids.len().to_string().yellow().bold(),
+        need_update_in_sql.len().to_string().yellow().bold(),
+        "│".bright_blue()
+    );
+    println!("{}", "└─────────────────────────────────────────────────┘".bright_blue());
 
     // Early return if no updates needed
     if sql_logs.is_empty() && mysql_logs.is_empty() {
-        println!("{}", "⚡ No changes detected, both databases are in sync!".green());
+        println!("{}", "⚡ No changes detected, both databases are in sync!".green().bold());
         return Ok(());
     }
     
     // Early return if all records exist in both databases and are identical
     if sql_only_ids.is_empty() && mysql_only_ids.is_empty() && 
        need_update_in_mysql.is_empty() && need_update_in_sql.is_empty() {
-        println!("{}", "✓ All existing records are identical - no synchronization needed!".green());
+        println!("{}", "✓ All existing records are identical - no synchronization needed!".green().bold());
         return Ok(());
     }
 
@@ -241,39 +276,99 @@ pub async fn optimized_sync_databases(
         return Ok(());
     }
     
-    let sync_progress = create_progress_bar(total_operations as u64, "Synchronizing databases...");
+    println!("{}", "┌─────────────────────────────────────────────────┐".bright_blue());
+    println!("{} {} {}",
+        "│".bright_blue(),
+        " 🚀 STARTING DATABASE SYNCHRONIZATION            ".bold().white().on_blue(),
+        "│".bright_blue()
+    );
+    println!("{}", "└─────────────────────────────────────────────────┘".bright_blue());
+    
+    // Create multi-progress display for sync operations
+    let sync_multi = create_multi_progress();
+    
+    // Create progress bars for both sync directions
+    let sql_to_mysql_progress = sync_multi.add(create_progress_bar(
+        (sql_only_ids.len() + need_update_in_mysql.len()) as u64,
+        &format!("🔄 {} → MySQL", "SQL Server".blue())
+    ));
+    
+    let mysql_to_sql_progress = sync_multi.add(create_progress_bar(
+        (mysql_only_ids.len() + need_update_in_sql.len()) as u64,
+        &format!("🔄 {} → SQL Server", "MySQL".green())
+    ));
 
-    // 3. Perform batch operations for better performance
-    // Sync SQL → MySQL (inserts and updates)
-    let sql_to_mysql_result = batch_sync_sql_to_mysql(
+    // 3. Perform batch operations for better performance - now with parallel execution
+    // Run both sync operations in parallel
+    let sql_to_mysql_future = batch_sync_sql_to_mysql(
         mysql_conn,
         &sql_logs,
         &sql_only_ids,
         &need_update_in_mysql,
         &sync_timestamp,
-        &sync_progress,
-    ).await?;
-
-    // Sync MySQL → SQL (inserts and updates)
-    let mysql_to_sql_result = batch_sync_mysql_to_sql(
+        &sql_to_mysql_progress,
+    );
+    
+    let mysql_to_sql_future = batch_sync_mysql_to_sql(
         sql_client,
         &mysql_logs,
         &mysql_only_ids,
         &need_update_in_sql,
         &sync_timestamp,
-        &sync_progress,
+        &mysql_to_sql_progress,
+    );
+    
+    // Execute both sync operations concurrently
+    let (sql_to_mysql_result, mysql_to_sql_result) = try_join(
+        sql_to_mysql_future,
+        mysql_to_sql_future,
     ).await?;
 
-    sync_progress.finish_with_message(format!(
-        "✅ Sync Complete! \n  SQL Server → MySQL: {} \n  MySQL → SQL Server: {}",
-        format!("Inserted {}, Updated {}", sql_to_mysql_result.0, sql_to_mysql_result.1).green(),
-        format!("Inserted {}, Updated {}", mysql_to_sql_result.0, mysql_to_sql_result.1).green()
-    ));
+    // Display final summary with enhanced visuals
+    let overall_elapsed = overall_start.elapsed();
+    
+    println!("{}", "┌─────────────────────────────────────────────────┐".bright_blue());
+    println!("{} {} {}",
+        "│".bright_blue(),
+        " ✅ SYNC RESULTS SUMMARY                         ".bold().white().on_green(),
+        "│".bright_blue()
+    );
+    println!("{}", "├─────────────────────────────────────────────────┤".bright_blue());
+    println!("{} {:<15} {:<15} {:<15} {}",
+        "│".bright_blue(),
+        "Direction".bold(),
+        "Inserted".bold(),
+        "Updated".bold(),
+        "│".bright_blue()
+    );
+    println!("{}", "├─────────────────────────────────────────────────┤".bright_blue());
+    println!("{} {:<15} {:<15} {:<15} {}",
+        "│".bright_blue(),
+        "SQL → MySQL".cyan(),
+        sql_to_mysql_result.0.to_string().green().bold(),
+        sql_to_mysql_result.1.to_string().green().bold(),
+        "│".bright_blue()
+    );
+    println!("{} {:<15} {:<15} {:<15} {}",
+        "│".bright_blue(),
+        "MySQL → SQL".green(),
+        mysql_to_sql_result.0.to_string().green().bold(),
+        mysql_to_sql_result.1.to_string().green().bold(),
+        "│".bright_blue()
+    );
+    println!("{}", "├─────────────────────────────────────────────────┤".bright_blue());
+    println!("{} {:<30} {:<15} {}",
+        "│".bright_blue(),
+        "Total time:".bold(),
+        format!("{:.2}s", overall_elapsed.as_secs_f64()).yellow().bold(),
+        "│".bright_blue()
+    );
+    println!("{}", "└─────────────────────────────────────────────────┘".bright_blue());
 
     Ok(())
 }
 
-// Helper function to mark identical records as synced
+// Helper function to mark identical records as synced - enhanced visual feedback
 async fn update_identical_records(
     sql_client: &mut SqlServerClient,
     mysql_conn: &mut mysql_async::Conn,
@@ -302,12 +397,14 @@ async fn update_identical_records(
     if !identical_ids.is_empty() {
         let chunk_size = 100;
         let update_spinner = create_spinner(&format!(
-            "Marking {} identical records as synced...", 
-            identical_ids.len()
+            "🔄 Marking {} identical records as synced...", 
+            identical_ids.len().to_string().cyan()
         ));
         
+        let start_time = Instant::now();
+        
         // Update SQL Server
-        for chunk in identical_ids.chunks(chunk_size) {
+        for (i, chunk) in identical_ids.chunks(chunk_size).enumerate() {
             if !chunk.is_empty() {
                 let placeholders = chunk.iter()
                     .map(|id| id.to_string())
@@ -322,13 +419,19 @@ async fn update_identical_records(
                 
                 // Execute SQL Server update
                 sql_client.execute(&sql_query, &[]).await?;
+                
+                update_spinner.set_message(format!(
+                    "🔄 Marking identical records: SQL Server batch {}/{} processed", 
+                    i + 1,
+                    identical_ids.chunks(chunk_size).len()
+                ));
             }
         }
         
         // Update MySQL
         let mut transaction = mysql_conn.start_transaction(Default::default()).await?;
         
-        for chunk in identical_ids.chunks(chunk_size) {
+        for (i, chunk) in identical_ids.chunks(chunk_size).enumerate() {
             if !chunk.is_empty() {
                 // For MySQL, we need to create a separate parameter for each ID
                 let placeholders = chunk.iter()
@@ -349,27 +452,39 @@ async fn update_identical_records(
                 
                 // Execute MySQL update
                 transaction.exec_drop(mysql_query, params).await?;
+                
+                update_spinner.set_message(format!(
+                    "🔄 Marking identical records: MySQL batch {}/{} processed", 
+                    i + 1,
+                    identical_ids.chunks(chunk_size).len()
+                ));
             }
         }
         
         transaction.commit().await?;
+        
+        let elapsed = start_time.elapsed();
         update_spinner.finish_with_message(format!(
-            "✓ Marked {} identical records as synced", identical_ids.len()
+            "✓ Marked {} identical records as synced in {:.2}s", 
+            identical_ids.len().to_string().green().bold(),
+            elapsed.as_secs_f64().to_string().yellow()
         ));
     }
     
     Ok(())
 }
 
-// Synchronization function for scheduling records
+// Synchronization function for scheduling records with enhanced visuals
 pub async fn sync_scheduling_records(
     sql_client: &mut SqlServerClient,
     mysql_conn: &mut mysql_async::Conn,
 ) -> Result<()> {
-    let fetch_spinner = create_spinner("Preparing to fetch scheduling records...");
+    let overall_start = Instant::now();
+    
+    let fetch_spinner = create_spinner("📊 Preparing to fetch scheduling records...");
 
     // 1. Get the latest sync timestamp from both databases for scheduling
-    fetch_spinner.set_message("Determining last sync time for scheduling records...".to_string());
+    fetch_spinner.set_message("⏳ Determining last sync time for scheduling records...".to_string());
     
     // Get the most recent sync time from SQL Server - handle NULL explicitly in SQL
     let sql_last_sync: Option<String> = {
@@ -422,8 +537,8 @@ pub async fn sync_scheduling_records(
     };
 
     fetch_spinner.set_message(format!(
-        "Fetching unsynchronized scheduling records since {}...",
-        last_sync_str.as_deref().unwrap_or("beginning")
+        "📡 Fetching unsynchronized scheduling records since {}...",
+        last_sync_str.as_deref().unwrap_or("beginning").green()
     ));
 
     // 2. Fetch only the scheduling records that need synchronization
@@ -455,9 +570,12 @@ pub async fn sync_scheduling_records(
         last_sync_clause
     );
 
+    // Create a multi-progress display
+    let multi_progress = create_multi_progress();
+    
     // Fetch logs from SQL Server and MySQL - parallel fetch
-    let fetch_sql_spinner = create_spinner("Fetching scheduling records from SQL Server...");
-    let fetch_mysql_spinner = create_spinner("Fetching scheduling records from MySQL...");
+    let fetch_sql_spinner = multi_progress.add(create_spinner("📥 Fetching scheduling records from SQL Server..."));
+    let fetch_mysql_spinner = multi_progress.add(create_spinner("📥 Fetching scheduling records from MySQL..."));
     
     // Run both fetch operations in parallel
     let sql_records_future = fetch_sql_server_scheduling(sql_client, &sql_query);
@@ -466,16 +584,24 @@ pub async fn sync_scheduling_records(
     // Execute both fetch operations concurrently
     let (sql_records_result, mysql_records_result) = try_join(
         async {
+            let start = Instant::now();
             let records = sql_records_future.await?;
+            let elapsed = start.elapsed();
             fetch_sql_spinner.finish_with_message(format!(
-                "✅ Fetched {} SQL Server scheduling records", records.len()
+                "✅ Fetched {} SQL Server scheduling records in {:.2}s", 
+                records.len().to_string().blue().bold(),
+                elapsed.as_secs_f64().to_string().yellow()
             ));
             Ok::<_, anyhow::Error>(records)
         },
         async {
+            let start = Instant::now();
             let records = mysql_records_future.await?;
+            let elapsed = start.elapsed();
             fetch_mysql_spinner.finish_with_message(format!(
-                "✅ Fetched {} MySQL scheduling records", records.len()
+                "✅ Fetched {} MySQL scheduling records in {:.2}s", 
+                records.len().to_string().green().bold(),
+                elapsed.as_secs_f64().to_string().yellow()
             ));
             Ok::<_, anyhow::Error>(records)
         }
@@ -528,39 +654,60 @@ pub async fn sync_scheduling_records(
     if identical_records > 0 {
         println!("{} {} {}", 
             "↪".cyan(),
-            format!("{} scheduling records already in sync - skipping these", identical_records).yellow(),
+            format!("{} scheduling records already in sync - skipping these", identical_records).yellow().bold(),
             "↩".cyan()
         );
     }
 
-    // Display sync summary
+    // Display sync summary with enhanced visuals
     fetch_spinner.finish_with_message(format!(
         "✅ Analysis complete: {} SQL Server scheduling records, {} MySQL scheduling records",
-        sql_records.len().to_string().blue(),
-        mysql_records.len().to_string().blue()
+        sql_records.len().to_string().blue().bold(),
+        mysql_records.len().to_string().green().bold()
     ));
     
-    // Show what needs to be synced
-    println!("Scheduling sync needed:");
-    println!("  → SQL Server to MySQL: {} new, {} updates", 
-        sql_only_ids.len().to_string().yellow(),
-        need_update_in_mysql.len().to_string().yellow()
+    // Show what needs to be synced with a nice table format
+    println!("{}", "┌─────────────────────────────────────────────────┐".bright_blue());
+    println!("{} {} {}",
+        "│".bright_blue(),
+        " 🔄 SCHEDULING SYNC REQUIREMENTS                 ".bold().white().on_blue(),
+        "│".bright_blue()
     );
-    println!("  → MySQL to SQL Server: {} new, {} updates", 
-        mysql_only_ids.len().to_string().yellow(),
-        need_update_in_sql.len().to_string().yellow()
+    println!("{}", "├─────────────────────────────────────────────────┤".bright_blue());
+    println!("{} {:<20} {:<10} {:<10} {}",
+        "│".bright_blue(),
+        "Direction".bold(),
+        "New".bold(),
+        "Updates".bold(),
+        "│".bright_blue()
     );
+    println!("{}", "├─────────────────────────────────────────────────┤".bright_blue());
+    println!("{} {:<20} {:<10} {:<10} {}",
+        "│".bright_blue(),
+        "SQL Server → MySQL".cyan(),
+        sql_only_ids.len().to_string().yellow().bold(),
+        need_update_in_mysql.len().to_string().yellow().bold(),
+        "│".bright_blue()
+    );
+    println!("{} {:<20} {:<10} {:<10} {}",
+        "│".bright_blue(),
+        "MySQL → SQL Server".green(),
+        mysql_only_ids.len().to_string().yellow().bold(),
+        need_update_in_sql.len().to_string().yellow().bold(),
+        "│".bright_blue()
+    );
+    println!("{}", "└─────────────────────────────────────────────────┘".bright_blue());
 
     // Early return if no updates needed
     if sql_records.is_empty() && mysql_records.is_empty() {
-        println!("{}", "⚡ No scheduling changes detected, both databases are in sync!".green());
+        println!("{}", "⚡ No scheduling changes detected, both databases are in sync!".green().bold());
         return Ok(());
     }
     
     // Early return if all records exist in both databases and are identical
     if sql_only_ids.is_empty() && mysql_only_ids.is_empty() && 
        need_update_in_mysql.is_empty() && need_update_in_sql.is_empty() {
-        println!("{}", "✓ All existing scheduling records are identical - no synchronization needed!".green());
+        println!("{}", "✓ All existing scheduling records are identical - no synchronization needed!".green().bold());
         return Ok(());
     }
 
@@ -585,39 +732,99 @@ pub async fn sync_scheduling_records(
         return Ok(());
     }
     
-    let sync_progress = create_progress_bar(total_operations as u64, "Synchronizing scheduling records...");
+    println!("{}", "┌─────────────────────────────────────────────────┐".bright_blue());
+    println!("{} {} {}",
+        "│".bright_blue(),
+        " 🚀 STARTING SCHEDULING SYNCHRONIZATION         ".bold().white().on_blue(),
+        "│".bright_blue()
+    );
+    println!("{}", "└─────────────────────────────────────────────────┘".bright_blue());
+    
+    // Create multi-progress display for sync operations
+    let sync_multi = create_multi_progress();
+    
+    // Create progress bars for both sync directions
+    let sql_to_mysql_progress = sync_multi.add(create_progress_bar(
+        (sql_only_ids.len() + need_update_in_mysql.len()) as u64,
+        &format!("🔄 {} → MySQL (Scheduling)", "SQL Server".blue())
+    ));
+    
+    let mysql_to_sql_progress = sync_multi.add(create_progress_bar(
+        (mysql_only_ids.len() + need_update_in_sql.len()) as u64,
+        &format!("🔄 {} → SQL Server (Scheduling)", "MySQL".green())
+    ));
 
-    // 3. Perform batch operations for better performance
-    // Sync SQL → MySQL (inserts and updates)
-    let sql_to_mysql_result = batch_sync_scheduling_sql_to_mysql(
+    // 3. Perform batch operations for better performance - now with parallel execution
+    // Run both sync operations in parallel for scheduling
+    let sql_to_mysql_future = batch_sync_scheduling_sql_to_mysql(
         mysql_conn,
         &sql_records,
         &sql_only_ids,
         &need_update_in_mysql,
         &sync_timestamp,
-        &sync_progress,
-    ).await?;
-
-    // Sync MySQL → SQL (inserts and updates)
-    let mysql_to_sql_result = batch_sync_scheduling_mysql_to_sql(
+        &sql_to_mysql_progress,
+    );
+    
+    let mysql_to_sql_future = batch_sync_scheduling_mysql_to_sql(
         sql_client,
         &mysql_records,
         &mysql_only_ids,
         &need_update_in_sql,
         &sync_timestamp,
-        &sync_progress,
+        &mysql_to_sql_progress,
+    );
+    
+    // Execute both sync operations concurrently
+    let (sql_to_mysql_result, mysql_to_sql_result) = try_join(
+        sql_to_mysql_future,
+        mysql_to_sql_future,
     ).await?;
 
-    sync_progress.finish_with_message(format!(
-        "✅ Scheduling Sync Complete! \n  SQL Server → MySQL: {} \n  MySQL → SQL Server: {}",
-        format!("Inserted {}, Updated {}", sql_to_mysql_result.0, sql_to_mysql_result.1).green(),
-        format!("Inserted {}, Updated {}", mysql_to_sql_result.0, mysql_to_sql_result.1).green()
-    ));
+    // Display final summary with enhanced visuals
+    let overall_elapsed = overall_start.elapsed();
+    
+    println!("{}", "┌─────────────────────────────────────────────────┐".bright_blue());
+    println!("{} {} {}",
+        "│".bright_blue(),
+        " ✅ SCHEDULING SYNC RESULTS                      ".bold().white().on_green(),
+        "│".bright_blue()
+    );
+    println!("{}", "├─────────────────────────────────────────────────┤".bright_blue());
+    println!("{} {:<15} {:<15} {:<15} {}",
+        "│".bright_blue(),
+        "Direction".bold(),
+        "Inserted".bold(),
+        "Updated".bold(),
+        "│".bright_blue()
+    );
+    println!("{}", "├─────────────────────────────────────────────────┤".bright_blue());
+    println!("{} {:<15} {:<15} {:<15} {}",
+        "│".bright_blue(),
+        "SQL → MySQL".cyan(),
+        sql_to_mysql_result.0.to_string().green().bold(),
+        sql_to_mysql_result.1.to_string().green().bold(),
+        "│".bright_blue()
+    );
+    println!("{} {:<15} {:<15} {:<15} {}",
+        "│".bright_blue(),
+        "MySQL → SQL".green(),
+        mysql_to_sql_result.0.to_string().green().bold(),
+        mysql_to_sql_result.1.to_string().green().bold(),
+        "│".bright_blue()
+    );
+    println!("{}", "├─────────────────────────────────────────────────┤".bright_blue());
+    println!("{} {:<30} {:<15} {}",
+        "│".bright_blue(),
+        "Total time:".bold(),
+        format!("{:.2}s", overall_elapsed.as_secs_f64()).yellow().bold(),
+        "│".bright_blue()
+    );
+    println!("{}", "└─────────────────────────────────────────────────┘".bright_blue());
 
     Ok(())
 }
 
-// Helper function to mark identical scheduling records as synced
+// Helper function to mark identical scheduling records as synced with enhanced visuals
 async fn update_identical_scheduling_records(
     sql_client: &mut SqlServerClient,
     mysql_conn: &mut mysql_async::Conn,
@@ -645,12 +852,14 @@ async fn update_identical_scheduling_records(
     if !identical_ids.is_empty() {
         let chunk_size = 100;
         let update_spinner = create_spinner(&format!(
-            "Marking {} identical scheduling records as synced...", 
-            identical_ids.len()
+            "🔄 Marking {} identical scheduling records as synced...", 
+            identical_ids.len().to_string().cyan()
         ));
         
+        let start_time = Instant::now();
+        
         // Update SQL Server
-        for chunk in identical_ids.chunks(chunk_size) {
+        for (i, chunk) in identical_ids.chunks(chunk_size).enumerate() {
             if !chunk.is_empty() {
                 let placeholders = chunk.iter()
                     .map(|id| id.to_string())
@@ -665,13 +874,19 @@ async fn update_identical_scheduling_records(
                 
                 // Execute SQL Server update
                 sql_client.execute(&sql_query, &[]).await?;
+                
+                update_spinner.set_message(format!(
+                    "🔄 Marking identical scheduling records: SQL Server batch {}/{} processed", 
+                    i + 1,
+                    identical_ids.chunks(chunk_size).len()
+                ));
             }
         }
         
         // Update MySQL
         let mut transaction = mysql_conn.start_transaction(Default::default()).await?;
         
-        for chunk in identical_ids.chunks(chunk_size) {
+        for (i, chunk) in identical_ids.chunks(chunk_size).enumerate() {
             if !chunk.is_empty() {
                 // For MySQL, we need to create a separate parameter for each ID
                 let placeholders = chunk.iter()
@@ -692,12 +907,22 @@ async fn update_identical_scheduling_records(
                 
                 // Execute MySQL update
                 transaction.exec_drop(mysql_query, params).await?;
+                
+                update_spinner.set_message(format!(
+                    "🔄 Marking identical scheduling records: MySQL batch {}/{} processed", 
+                    i + 1,
+                    identical_ids.chunks(chunk_size).len()
+                ));
             }
         }
         
         transaction.commit().await?;
+        
+        let elapsed = start_time.elapsed();
         update_spinner.finish_with_message(format!(
-            "✓ Marked {} identical scheduling records as synced", identical_ids.len()
+            "✓ Marked {} identical scheduling records as synced in {:.2}s", 
+            identical_ids.len().to_string().green().bold(),
+            elapsed.as_secs_f64().to_string().yellow()
         ));
     }
     

@@ -1,4 +1,4 @@
-// Updated src/main.rs
+// Enhanced src/main.rs with improved visualization
 
 use anyhow::Result;
 use colored::*;
@@ -26,22 +26,30 @@ use crate::ui::{create_spinner, init_ui};
 async fn main() -> Result<()> {
     let start_time = Instant::now();
 
+    // Initialize UI with beautiful banner
     init_ui();
 
+    // Load environment variables
     dotenv().ok();
+    println!("{}", "✨ Environment loaded successfully".green());
 
-    let connection_spinner = create_spinner("Establishing database connections...");
+    // Establish database connections with visual feedback
+    let connection_spinner = create_spinner("🔌 Establishing database connections...");
 
     // Connect to both databases
     let (mut sql_client, mut mysql_conn, mysql_db_name) =
         connect_databases(&connection_spinner).await?;
 
     // Ensure the additional columns exist on both databases for both tables - run in parallel
+    let schema_spinner = create_spinner("🏗️  Verifying database schemas...");
+    
     let prepare_att_logs_futures = try_join(
         add_columns_if_not_exist_sql_server(&mut sql_client),
         add_columns_if_not_exist_mysql(&mut mysql_conn, &mysql_db_name),
     );
     prepare_att_logs_futures.await?;
+    
+    schema_spinner.set_message("🏗️  Verifying scheduling table schemas...".to_string());
     
     // Also prepare scheduling tables
     let prepare_scheduling_futures = try_join(
@@ -50,11 +58,21 @@ async fn main() -> Result<()> {
     );
     prepare_scheduling_futures.await?;
 
-    connection_spinner.finish_with_message("✅ Databases connected and columns verified!");
+    schema_spinner.finish_with_message("✅ Database schemas verified and ready!".green().to_string());
+    connection_spinner.finish_with_message("✅ Database connections established!".green().to_string());
 
+    // Print separator before starting sync operations
+    println!("{}", "───────────────────────────────────────────────".bright_black());
+    
     // First, sync attendance logs
-    let fetch_spinner = create_spinner("Preparing to fetch attendance logs...");
-    println!("\n{}", "🔄 SYNCING ATTENDANCE LOGS".bold().blue());
+    let fetch_spinner = create_spinner("📊 Preparing to fetch attendance logs...");
+    println!("{}", "┌─────────────────────────────────────────────────┐".bright_blue());
+    println!("{} {} {}",
+        "│".bright_blue(),
+        " 🔄 SYNCING ATTENDANCE LOGS                     ".bold().white().on_blue(),
+        "│".bright_blue()
+    );
+    println!("{}", "└─────────────────────────────────────────────────┘".bright_blue());
     
     let sync_result = optimized_sync_databases(&mut sql_client, &mut mysql_conn, fetch_spinner).await;
 
@@ -63,7 +81,7 @@ async fn main() -> Result<()> {
             println!(
                 "{}",
                 "✅ Attendance logs synchronization completed successfully!"
-                    .green()
+                    .green().bold()
             );
         }
         Err(e) => {
@@ -72,8 +90,17 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Print separator between sync operations
+    println!("{}", "───────────────────────────────────────────────".bright_black());
+    
     // Then, sync scheduling records
-    println!("\n{}", "🔄 SYNCING SCHEDULING RECORDS".bold().blue());
+    println!("{}", "┌─────────────────────────────────────────────────┐".bright_blue());
+    println!("{} {} {}",
+        "│".bright_blue(),
+        " 🔄 SYNCING SCHEDULING RECORDS                  ".bold().white().on_blue(),
+        "│".bright_blue()
+    );
+    println!("{}", "└─────────────────────────────────────────────────┘".bright_blue());
     
     let scheduling_sync_result = sync_scheduling_records(&mut sql_client, &mut mysql_conn).await;
     
@@ -82,7 +109,7 @@ async fn main() -> Result<()> {
             println!(
                 "{}",
                 "✅ Scheduling records synchronization completed successfully!"
-                    .green()
+                    .green().bold()
             );
         }
         Err(e) => {
@@ -91,13 +118,26 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Display execution time
+    // Display execution time with nice formatting
     let duration = start_time.elapsed();
-    println!(
-        "\n{}",
-        format!("⏱️ Total execution time: {:.2?}", duration).cyan()
+    
+    println!("{}", "───────────────────────────────────────────────".bright_black());
+    println!("{}", "┌─────────────────────────────────────────────────┐".bright_blue());
+    println!("{} {} {}",
+        "│".bright_blue(),
+        " 📈 SYNCHRONIZATION PERFORMANCE                 ".bold().white().on_blue(),
+        "│".bright_blue()
     );
+    println!("{}", "├─────────────────────────────────────────────────┤".bright_blue());
+    println!("{} {:<30} {:<15} {}",
+        "│".bright_blue(),
+        "Total execution time:".bold(),
+        format!("{:.2?}", duration).yellow().bold(),
+        "│".bright_blue()
+    );
+    println!("{}", "└─────────────────────────────────────────────────┘".bright_blue());
 
+    println!("{}", "───────────────────────────────────────────────".bright_black());
     println!(
         "{}",
         "🎉 Database synchronization completed successfully! 🎉"
