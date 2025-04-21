@@ -1,4 +1,4 @@
-// Enhanced src/sync/engine.rs file with real-time transfer visualization
+// Optimized src/sync/engine.rs with direct status filtering
 
 use anyhow::Result;
 use colored::*;
@@ -22,7 +22,7 @@ use crate::sync::sql_to_mysql::batch_sync_scheduling_sql_to_mysql;
 use crate::sync::mysql_to_sql::batch_sync_scheduling_mysql_to_sql;
 use crate::ui::{create_spinner, create_progress_bar, create_multi_progress};
 
-// Main synchronization function with enhanced visuals
+// Main synchronization function with direct status filtering
 pub async fn optimized_sync_databases(
     sql_client: &mut SqlServerClient,
     mysql_conn: &mut mysql_async::Conn,
@@ -30,96 +30,35 @@ pub async fn optimized_sync_databases(
 ) -> Result<()> {
     let overall_start = Instant::now();
     
-    // 1. Get the latest sync timestamp from both databases
-    fetch_spinner.set_message("⏳ Determining last sync time...".to_string());
+    // 1. OPTIMIZED: Skip timestamp checks and directly filter by status
+    fetch_spinner.set_message("⚡ Optimized sync: Directly targeting pending/NULL records...".to_string());
     
-    // Get the most recent sync time from SQL Server - handle NULL explicitly in SQL
-    let sql_last_sync: Option<String> = {
-        // Convert NULL to a string representation in SQL Server to avoid Rust conversion issues
-        // Include both SYNCED and pending records in the sync logic
-        let query = "SELECT CONVERT(VARCHAR(23), MAX(sync_datetime), 120) FROM tbl_att_logs WHERE sync_status IN ('SYNCED', 'pending')";
-        let result = sql_client.query(query, &[]).await?;
-        
-        // Process the result safely
-        match result.into_row().await? {
-            Some(row) => {
-                // Get as Option<&str> to properly handle NULL values
-                let str_val: Option<&str> = row.get(0);
-                match str_val {
-                    Some(s) if !s.is_empty() => Some(s.to_string()),
-                    _ => None
-                }
-            },
-            None => None
-        }
-    };
-
-    // Get the most recent sync time from MySQL - handle NULL with COALESCE
-    let mysql_last_sync: Option<String> = {
-        // Use COALESCE to convert NULL to empty string in MySQL
-        // Include both SYNCED and pending records in the sync logic
-        let query = "SELECT COALESCE(MAX(sync_datetime), '') FROM tbl_att_logs WHERE sync_status IN ('SYNCED', 'pending')";
-        let result: String = mysql_conn.query_first(query).await?.unwrap_or_default();
-        
-        // Only use non-empty results
-        if !result.is_empty() {
-            Some(result)
-        } else {
-            None
-        }
-    };
-
-    // Determine the overall last sync time (use the earlier one if they differ)
-    let last_sync_str = match (sql_last_sync.as_deref(), mysql_last_sync.as_deref()) {
-        (Some(sql), Some(mysql)) => {
-            if sql < mysql { Some(sql.to_string()) } else { Some(mysql.to_string()) }
-        },
-        (Some(sql), None) => Some(sql.to_string()),
-        (None, Some(mysql)) => Some(mysql.to_string()),
-        (None, None) => None,
-    };
-
-    // Format for SQL queries - now including records with 'pending' status
-    let last_sync_clause = match &last_sync_str {
-        Some(timestamp) => format!("AND (sync_status IS NULL OR sync_status = 'pending' OR sync_datetime > '{}')", timestamp),
-        None => String::from(""),
-    };
-
-    fetch_spinner.set_message(format!(
-        "📡 Fetching unsynchronized logs since {}...",
-        last_sync_str.as_deref().unwrap_or("beginning").green()
-    ));
-
-    // 2. Fetch only the logs that need synchronization
+    // OPTIMIZATION: Only get records with NULL or pending status
     // For SQL Server
-    let sql_query = format!(
+    let sql_query = 
         "SELECT log_id, employee_id, \
          CONVERT(VARCHAR(23), log_dtime, 120) as log_dtime_str, \
          ISNULL(add_by, 0) as add_by_safe, \
          CONVERT(VARCHAR(23), add_dtime, 120) as add_dtime_str, \
          insert_dtr_log_pic, hr_approval, dtr_type, remarks \
          FROM tbl_att_logs \
-         WHERE 1=1 {} \
-         ORDER BY log_id",
-        last_sync_clause
-    );
+         WHERE sync_status IS NULL OR sync_status = 'pending' \
+         ORDER BY log_id";
 
     // For MySQL
-    let mysql_query = format!(
+    let mysql_query = 
         "SELECT log_id, employee_id, log_dtime, add_by, add_dtime, \
          insert_dtr_log_pic, hr_approval, dtr_type, remarks \
          FROM tbl_att_logs \
-         WHERE 1=1 {} \
-         ORDER BY log_id",
-        last_sync_clause
-    );
+         WHERE sync_status IS NULL OR sync_status = 'pending' \
+         ORDER BY log_id";
 
     // Create a multi-progress display
     let multi_progress = create_multi_progress();
     
     // Fetch logs from SQL Server and MySQL - parallel fetch
-    let fetch_sql_spinner = multi_progress.add(create_spinner("📥 Fetching logs from SQL Server..."));
-    let fetch_mysql_spinner = multi_progress.add(create_spinner("📥 Fetching logs from MySQL..."));
+    let fetch_sql_spinner = multi_progress.add(create_spinner("📥 Fetching pending logs from SQL Server..."));
+    let fetch_mysql_spinner = multi_progress.add(create_spinner("📥 Fetching pending logs from MySQL..."));
     
     // Run both fetch operations in parallel
     let sql_logs_future = fetch_sql_server_logs(sql_client, &sql_query);
@@ -132,7 +71,7 @@ pub async fn optimized_sync_databases(
             let logs = sql_logs_future.await?;
             let elapsed = start.elapsed();
             fetch_sql_spinner.finish_with_message(format!(
-                "✅ Fetched {} SQL Server logs in {:.2}s", 
+                "✅ Fetched {} pending SQL Server logs in {:.2}s", 
                 logs.len().to_string().blue().bold(),
                 elapsed.as_secs_f64().to_string().yellow()
             ));
@@ -143,7 +82,7 @@ pub async fn optimized_sync_databases(
             let logs = mysql_logs_future.await?;
             let elapsed = start.elapsed();
             fetch_mysql_spinner.finish_with_message(format!(
-                "✅ Fetched {} MySQL logs in {:.2}s", 
+                "✅ Fetched {} pending MySQL logs in {:.2}s", 
                 logs.len().to_string().green().bold(),
                 elapsed.as_secs_f64().to_string().yellow()
             ));
@@ -154,12 +93,6 @@ pub async fn optimized_sync_databases(
     let sql_logs = sql_logs_result;
     let mysql_logs = mysql_logs_result;
     
-    // Double-check for MySQL records by querying a count of all records
-    let all_mysql_count = get_mysql_record_count(mysql_conn).await?;
-    if all_mysql_count > 0 && mysql_logs.is_empty() {
-        println!("{}", format!("⚠️  Warning: Found {} records in MySQL but none matched sync criteria", all_mysql_count).yellow().bold());
-    }
-
     // Calculate what logs need to be synced in each direction
     let sql_log_ids: HashSet<i32> = sql_logs.keys().copied().collect();
     let mysql_log_ids: HashSet<i32> = mysql_logs.keys().copied().collect();
@@ -198,17 +131,23 @@ pub async fn optimized_sync_databases(
     if identical_records > 0 {
         println!("{} {} {}", 
             "↪".cyan(),
-            format!("{} records already in sync - skipping these", identical_records).yellow().bold(),
+            format!("{} records already identical - marking as synced", identical_records).yellow().bold(),
             "↩".cyan()
         );
     }
 
     // Display sync summary with enhanced visuals
     fetch_spinner.finish_with_message(format!(
-        "✅ Analysis complete: {} SQL Server logs, {} MySQL logs",
+        "✅ Analysis complete: {} SQL Server pending logs, {} MySQL pending logs",
         sql_logs.len().to_string().blue().bold(),
         mysql_logs.len().to_string().green().bold()
     ));
+    
+    // Early return if no updates needed
+    if sql_logs.is_empty() && mysql_logs.is_empty() {
+        println!("{}", "⚡ No pending records found, databases are in sync!".green().bold());
+        return Ok(());
+    }
     
     // Show what needs to be synced with a nice table format
     println!("{}", "┌─────────────────────────────────────────────────┐".bright_blue());
@@ -242,31 +181,20 @@ pub async fn optimized_sync_databases(
     );
     println!("{}", "└─────────────────────────────────────────────────┘".bright_blue());
 
-    // Early return if no updates needed
-    if sql_logs.is_empty() && mysql_logs.is_empty() {
-        println!("{}", "⚡ No changes detected, both databases are in sync!".green().bold());
-        return Ok(());
-    }
-    
-    // Early return if all records exist in both databases and are identical
-    if sql_only_ids.is_empty() && mysql_only_ids.is_empty() && 
-       need_update_in_mysql.is_empty() && need_update_in_sql.is_empty() {
-        println!("{}", "✓ All existing records are identical - no synchronization needed!".green().bold());
-        return Ok(());
-    }
-
     // Current timestamp for sync_datetime
     let sync_timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     
     // Mark existing identical records as synced
-    update_identical_records(
-        sql_client, 
-        mysql_conn, 
-        &sql_logs, 
-        &mysql_logs, 
-        &common_ids, 
-        &sync_timestamp
-    ).await?;
+    if identical_records > 0 {
+        update_identical_records(
+            sql_client, 
+            mysql_conn, 
+            &sql_logs, 
+            &mysql_logs, 
+            &common_ids, 
+            &sync_timestamp
+        ).await?;
+    }
     
     // Progress bar for sync
     let total_operations = sql_only_ids.len() + mysql_only_ids.len() + need_update_in_mysql.len() + need_update_in_sql.len();
@@ -474,7 +402,7 @@ async fn update_identical_records(
     Ok(())
 }
 
-// Synchronization function for scheduling records with enhanced visuals
+// Optimized synchronization function for scheduling records with direct status filtering
 pub async fn sync_scheduling_records(
     sql_client: &mut SqlServerClient,
     mysql_conn: &mut mysql_async::Conn,
@@ -483,67 +411,11 @@ pub async fn sync_scheduling_records(
     
     let fetch_spinner = create_spinner("📊 Preparing to fetch scheduling records...");
 
-    // 1. Get the latest sync timestamp from both databases for scheduling
-    fetch_spinner.set_message("⏳ Determining last sync time for scheduling records...".to_string());
+    // OPTIMIZATION: Skip timestamp checks and directly filter by status
+    fetch_spinner.set_message("⚡ Optimized sync: Directly targeting pending/NULL scheduling records...".to_string());
     
-    // Get the most recent sync time from SQL Server - handle NULL explicitly in SQL
-    let sql_last_sync: Option<String> = {
-        // Convert NULL to a string representation in SQL Server to avoid Rust conversion issues
-        let query = "SELECT CONVERT(VARCHAR(23), MAX(sync_datetime), 120) FROM tbl_scheduling WHERE sync_status IN ('SYNCED', 'pending')";
-        let result = sql_client.query(query, &[]).await?;
-        
-        // Process the result safely
-        match result.into_row().await? {
-            Some(row) => {
-                // Get as Option<&str> to properly handle NULL values
-                let str_val: Option<&str> = row.get(0);
-                match str_val {
-                    Some(s) if !s.is_empty() => Some(s.to_string()),
-                    _ => None
-                }
-            },
-            None => None
-        }
-    };
-
-    // Get the most recent sync time from MySQL - handle NULL with COALESCE
-    let mysql_last_sync: Option<String> = {
-        // Use COALESCE to convert NULL to empty string in MySQL
-        let query = "SELECT COALESCE(MAX(sync_datetime), '') FROM tbl_scheduling WHERE sync_status IN ('SYNCED', 'pending')";
-        let result: String = mysql_conn.query_first(query).await?.unwrap_or_default();
-        
-        // Only use non-empty results
-        if !result.is_empty() {
-            Some(result)
-        } else {
-            None
-        }
-    };
-
-    // Determine the overall last sync time (use the earlier one if they differ)
-    let last_sync_str = match (sql_last_sync.as_deref(), mysql_last_sync.as_deref()) {
-        (Some(sql), Some(mysql)) => {
-            if sql < mysql { Some(sql.to_string()) } else { Some(mysql.to_string()) }
-        },
-        (Some(sql), None) => Some(sql.to_string()),
-        (None, Some(mysql)) => Some(mysql.to_string()),
-        (None, None) => None,
-    };
-
-    // Format for SQL queries - now including records with 'pending' status
-    let last_sync_clause = match &last_sync_str {
-        Some(timestamp) => format!("AND (sync_status IS NULL OR sync_status = 'pending' OR sync_datetime > '{}')", timestamp),
-        None => String::from(""),
-    };
-
-    fetch_spinner.set_message(format!(
-        "📡 Fetching unsynchronized scheduling records since {}...",
-        last_sync_str.as_deref().unwrap_or("beginning").green()
-    ));
-
-    // 2. Fetch only the scheduling records that need synchronization
-    // For SQL Server
-    let sql_query = format!(
+    // For SQL Server - directly target records with NULL or pending status
+    let sql_query = 
         "SELECT scheduling_id, 
          CONVERT(VARCHAR(10), date_start, 120) as date_start_str, 
          CONVERT(VARCHAR(10), date_end, 120) as date_end_str, 
@@ -552,30 +424,26 @@ pub async fn sync_scheduling_records(
          CONVERT(VARCHAR(23), created_at, 120) as created_at_str, 
          [case], remark_2nd, display_order, display_order_2nd 
          FROM tbl_scheduling 
-         WHERE 1=1 {} 
-         ORDER BY scheduling_id",
-        last_sync_clause
-    );
+         WHERE sync_status IS NULL OR sync_status = 'pending' 
+         ORDER BY scheduling_id";
 
-    // For MySQL
-    let mysql_query = format!(
+    // For MySQL - directly target records with NULL or pending status
+    let mysql_query = 
         "SELECT scheduling_id, 
          DATE_FORMAT(date_start, '%Y-%m-%d') as date_start, 
          DATE_FORMAT(date_end, '%Y-%m-%d') as date_end, 
          remarks, station, employee_id, department, time_start, time_end, 
          updated_at, created_at, `case`, remark_2nd, display_order, display_order_2nd 
          FROM tbl_scheduling 
-         WHERE 1=1 {} 
-         ORDER BY scheduling_id",
-        last_sync_clause
-    );
+         WHERE sync_status IS NULL OR sync_status = 'pending' 
+         ORDER BY scheduling_id";
 
     // Create a multi-progress display
     let multi_progress = create_multi_progress();
     
     // Fetch logs from SQL Server and MySQL - parallel fetch
-    let fetch_sql_spinner = multi_progress.add(create_spinner("📥 Fetching scheduling records from SQL Server..."));
-    let fetch_mysql_spinner = multi_progress.add(create_spinner("📥 Fetching scheduling records from MySQL..."));
+    let fetch_sql_spinner = multi_progress.add(create_spinner("📥 Fetching pending scheduling records from SQL Server..."));
+    let fetch_mysql_spinner = multi_progress.add(create_spinner("📥 Fetching pending scheduling records from MySQL..."));
     
     // Run both fetch operations in parallel
     let sql_records_future = fetch_sql_server_scheduling(sql_client, &sql_query);
@@ -588,7 +456,7 @@ pub async fn sync_scheduling_records(
             let records = sql_records_future.await?;
             let elapsed = start.elapsed();
             fetch_sql_spinner.finish_with_message(format!(
-                "✅ Fetched {} SQL Server scheduling records in {:.2}s", 
+                "✅ Fetched {} pending SQL Server scheduling records in {:.2}s", 
                 records.len().to_string().blue().bold(),
                 elapsed.as_secs_f64().to_string().yellow()
             ));
@@ -599,7 +467,7 @@ pub async fn sync_scheduling_records(
             let records = mysql_records_future.await?;
             let elapsed = start.elapsed();
             fetch_mysql_spinner.finish_with_message(format!(
-                "✅ Fetched {} MySQL scheduling records in {:.2}s", 
+                "✅ Fetched {} pending MySQL scheduling records in {:.2}s", 
                 records.len().to_string().green().bold(),
                 elapsed.as_secs_f64().to_string().yellow()
             ));
@@ -610,12 +478,6 @@ pub async fn sync_scheduling_records(
     let sql_records = sql_records_result;
     let mysql_records = mysql_records_result;
     
-    // Double-check for MySQL records by querying a count of all records
-    let all_mysql_count = get_mysql_scheduling_count(mysql_conn).await?;
-    if all_mysql_count > 0 && mysql_records.is_empty() {
-        println!("{}", format!("⚠️  Warning: Found {} scheduling records in MySQL but none matched sync criteria", all_mysql_count).yellow());
-    }
-
     // Calculate what records need to be synced in each direction
     let sql_record_ids: HashSet<i32> = sql_records.keys().copied().collect();
     let mysql_record_ids: HashSet<i32> = mysql_records.keys().copied().collect();
@@ -654,17 +516,23 @@ pub async fn sync_scheduling_records(
     if identical_records > 0 {
         println!("{} {} {}", 
             "↪".cyan(),
-            format!("{} scheduling records already in sync - skipping these", identical_records).yellow().bold(),
+            format!("{} scheduling records already identical - marking as synced", identical_records).yellow().bold(),
             "↩".cyan()
         );
     }
 
     // Display sync summary with enhanced visuals
     fetch_spinner.finish_with_message(format!(
-        "✅ Analysis complete: {} SQL Server scheduling records, {} MySQL scheduling records",
+        "✅ Analysis complete: {} SQL Server pending scheduling records, {} MySQL pending scheduling records",
         sql_records.len().to_string().blue().bold(),
         mysql_records.len().to_string().green().bold()
     ));
+    
+    // Early return if no updates needed
+    if sql_records.is_empty() && mysql_records.is_empty() {
+        println!("{}", "⚡ No pending scheduling records found, both databases are in sync!".green().bold());
+        return Ok(());
+    }
     
     // Show what needs to be synced with a nice table format
     println!("{}", "┌─────────────────────────────────────────────────┐".bright_blue());
@@ -698,31 +566,20 @@ pub async fn sync_scheduling_records(
     );
     println!("{}", "└─────────────────────────────────────────────────┘".bright_blue());
 
-    // Early return if no updates needed
-    if sql_records.is_empty() && mysql_records.is_empty() {
-        println!("{}", "⚡ No scheduling changes detected, both databases are in sync!".green().bold());
-        return Ok(());
-    }
-    
-    // Early return if all records exist in both databases and are identical
-    if sql_only_ids.is_empty() && mysql_only_ids.is_empty() && 
-       need_update_in_mysql.is_empty() && need_update_in_sql.is_empty() {
-        println!("{}", "✓ All existing scheduling records are identical - no synchronization needed!".green().bold());
-        return Ok(());
-    }
-
     // Current timestamp for sync_datetime
     let sync_timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     
     // Mark existing identical records as synced
-    update_identical_scheduling_records(
-        sql_client, 
-        mysql_conn, 
-        &sql_records, 
-        &mysql_records, 
-        &common_ids, 
-        &sync_timestamp
-    ).await?;
+    if identical_records > 0 {
+        update_identical_scheduling_records(
+            sql_client, 
+            mysql_conn, 
+            &sql_records, 
+            &mysql_records, 
+            &common_ids, 
+            &sync_timestamp
+        ).await?;
+    }
     
     // Progress bar for sync
     let total_operations = sql_only_ids.len() + mysql_only_ids.len() + need_update_in_mysql.len() + need_update_in_sql.len();

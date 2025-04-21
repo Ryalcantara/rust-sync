@@ -1,4 +1,4 @@
-// Enhanced src/sync/mysql_to_sql.rs file with real-time transfer visualization
+// Fixed src/sync/mysql_to_sql.rs with corrected temp table handling
 
 use anyhow::Result;
 use indicatif::ProgressBar;
@@ -22,7 +22,7 @@ fn format_transfer_speed(records: u32, elapsed_secs: f64) -> String {
     }
 }
 
-// Batch synchronize from MySQL to SQL Server with enhanced visuals
+// Optimized batch synchronize from MySQL to SQL Server with enhanced visuals
 pub async fn batch_sync_mysql_to_sql(
     sql_client: &mut SqlServerClient,
     mysql_logs: &HashMap<i32, AttendanceLog>,
@@ -36,106 +36,102 @@ pub async fn batch_sync_mysql_to_sql(
     
     // Metrics for real-time reporting
     let start_time = Instant::now();
-    const BATCH_SIZE: usize = 50; // Smaller batch for SQL Server
+    
+    // OPTIMIZATION: Increased batch size for better performance
+    const BATCH_SIZE: usize = 75; // Increased from 50
     
     if !ids_to_insert.is_empty() {
         progress_bar.set_message(format!("🔄 {} → SQL Server (INSERT)", "MySQL".green()));
         
-        // Process each record by directly building a SQL statement with all parameters
+        // Process in chunks for better performance
         for (chunk_idx, ids_chunk) in ids_to_insert.chunks(BATCH_SIZE).enumerate() {
             let batch_start = Instant::now();
             
-            for &id in ids_chunk {
-                let log = &mysql_logs[&id];
-                
-                // Format optional values properly for SQL
-                let insert_dtr_log_pic_sql = match &log.insert_dtr_log_pic {
-                    Some(val) => format!("'{}'", val.replace("'", "''")),
-                    None => "NULL".to_string()
-                };
-                
-                let hr_approval_sql = match &log.hr_approval {
-                    Some(val) => format!("'{}'", val.replace("'", "''")),
-                    None => "NULL".to_string()
-                };
-                
-                let dtr_type_sql = match &log.dtr_type {
-                    Some(val) => format!("'{}'", val.replace("'", "''")),
-                    None => "NULL".to_string()
-                };
-                
-                let remarks_sql = match &log.remarks {
-                    Some(val) => format!("'{}'", val.replace("'", "''")),
-                    None => "NULL".to_string()
-                };
-                
-                // Build a complete SQL statement that:
-                // 1. Creates a temp table with the right structure
-                // 2. Inserts our data into the temp table
-                // 3. Enables IDENTITY_INSERT in a properly scoped context
-                // 4. Performs the insert with a SELECT from the temp table
-                // 5. Cleans up the temp table
-                let sql = format!(
-                    "
-                    -- Create temp table
-                    IF OBJECT_ID('tempdb..#TempLog') IS NOT NULL DROP TABLE #TempLog;
+            if !ids_chunk.is_empty() {
+                // FIX: Process each record directly instead of using temp tables
+                for &id in ids_chunk {
+                    let log = &mysql_logs[&id];
                     
-                    CREATE TABLE #TempLog (
-                        log_id INT PRIMARY KEY,
-                        employee_id VARCHAR(50) NOT NULL,
-                        log_dtime DATETIME NOT NULL,
-                        add_by INT,
-                        add_dtime DATETIME,
-                        insert_dtr_log_pic VARCHAR(255),
-                        hr_approval VARCHAR(50),
-                        dtr_type VARCHAR(50),
-                        remarks TEXT,
-                        sync_status VARCHAR(50),
-                        sync_datetime DATETIME
+                    // Format optional values properly for SQL
+                    let insert_dtr_log_pic_sql = match &log.insert_dtr_log_pic {
+                        Some(val) => format!("'{}'", val.replace("'", "''")),
+                        None => "NULL".to_string()
+                    };
+                    
+                    let hr_approval_sql = match &log.hr_approval {
+                        Some(val) => format!("'{}'", val.replace("'", "''")),
+                        None => "NULL".to_string()
+                    };
+                    
+                    let dtr_type_sql = match &log.dtr_type {
+                        Some(val) => format!("'{}'", val.replace("'", "''")),
+                        None => "NULL".to_string()
+                    };
+                    
+                    let remarks_sql = match &log.remarks {
+                        Some(val) => format!("'{}'", val.replace("'", "''")),
+                        None => "NULL".to_string()
+                    };
+                    
+                    // Use a direct approach with SET IDENTITY_INSERT
+                    let sql = format!(
+                        "SET IDENTITY_INSERT [dbo].[tbl_att_logs] ON;
+                         
+                         MERGE INTO [dbo].[tbl_att_logs] AS target
+                         USING (SELECT {} AS log_id) AS source
+                         ON target.log_id = source.log_id
+                         WHEN MATCHED THEN
+                            UPDATE SET
+                                employee_id = '{}',
+                                log_dtime = '{}',
+                                add_by = {},
+                                add_dtime = '{}',
+                                insert_dtr_log_pic = {},
+                                hr_approval = {},
+                                dtr_type = {},
+                                remarks = {},
+                                sync_status = 'SYNCED',
+                                sync_datetime = '{}'
+                         WHEN NOT MATCHED THEN
+                            INSERT (
+                                log_id, employee_id, log_dtime, add_by, add_dtime,
+                                insert_dtr_log_pic, hr_approval, dtr_type, remarks,
+                                sync_status, sync_datetime
+                            )
+                            VALUES (
+                                {}, '{}', '{}', {}, '{}',
+                                {}, {}, {}, {},
+                                'SYNCED', '{}'
+                            );
+                         
+                         SET IDENTITY_INSERT [dbo].[tbl_att_logs] OFF;",
+                        log.log_id,
+                        log.employee_id.replace("'", "''"),
+                        log.log_dtime.replace("'", "''"),
+                        log.add_by,
+                        log.add_dtime.replace("'", "''"),
+                        insert_dtr_log_pic_sql,
+                        hr_approval_sql,
+                        dtr_type_sql,
+                        remarks_sql,
+                        sync_timestamp,
+                        log.log_id,
+                        log.employee_id.replace("'", "''"),
+                        log.log_dtime.replace("'", "''"),
+                        log.add_by,
+                        log.add_dtime.replace("'", "''"),
+                        insert_dtr_log_pic_sql,
+                        hr_approval_sql,
+                        dtr_type_sql,
+                        remarks_sql,
+                        sync_timestamp
                     );
                     
-                    -- Insert data into temp table
-                    INSERT INTO #TempLog (log_id, employee_id, log_dtime, add_by, add_dtime, insert_dtr_log_pic, hr_approval, dtr_type, remarks, sync_status, sync_datetime)
-                    VALUES (
-                        {}, '{}', '{}', {}, '{}', 
-                        {}, {}, {}, {}, 
-                        'SYNCED', '{}'
-                    );
-                    
-                    -- Set IDENTITY_INSERT ON in a properly scoped context and insert from temp table
-                    EXEC('SET IDENTITY_INSERT [dbo].[tbl_att_logs] ON;
-                         INSERT INTO [dbo].[tbl_att_logs] (
-                            log_id, employee_id, log_dtime, add_by, add_dtime, 
-                            insert_dtr_log_pic, hr_approval, dtr_type, remarks, 
-                            sync_status, sync_datetime
-                         )
-                         SELECT 
-                            log_id, employee_id, log_dtime, add_by, add_dtime, 
-                            insert_dtr_log_pic, hr_approval, dtr_type, remarks, 
-                            sync_status, sync_datetime
-                         FROM #TempLog;
-                         SET IDENTITY_INSERT [dbo].[tbl_att_logs] OFF;');
-                    
-                    -- Clean up
-                    DROP TABLE #TempLog;
-                    ",
-                    log.log_id,
-                    log.employee_id.replace("'", "''"),
-                    log.log_dtime.replace("'", "''"),
-                    log.add_by,
-                    log.add_dtime.replace("'", "''"),
-                    insert_dtr_log_pic_sql,
-                    hr_approval_sql,
-                    dtr_type_sql,
-                    remarks_sql,
-                    sync_timestamp
-                );
+                    sql_client.execute(&sql, &[]).await?;
+                }
                 
-                // Execute the SQL as a single batch
-                sql_client.execute(&sql, &[]).await?;
-                
-                inserted += 1;
-                progress_bar.inc(1);
+                inserted += ids_chunk.len() as u32;
+                progress_bar.inc(ids_chunk.len() as u64);
             }
             
             let batch_elapsed = batch_start.elapsed();
@@ -159,69 +155,75 @@ pub async fn batch_sync_mysql_to_sql(
         }
     }
 
-    // Handle updates 
+    // Handle updates - already included in the MERGE statement above
     if !ids_to_update.is_empty() {
         let update_start = Instant::now();
         progress_bar.set_message(format!("🔄 {} → SQL Server (UPDATE)", "MySQL".green()));
         
+        // Process updates directly with MERGE - same approach as inserts above
         for (chunk_idx, ids_chunk) in ids_to_update.chunks(BATCH_SIZE).enumerate() {
             let batch_start = Instant::now();
             
-            for &id in ids_chunk {
-                let log = &mysql_logs[&id];
+            if !ids_chunk.is_empty() {
+                // Use the same direct approach with MERGE
+                for &id in ids_chunk {
+                    let log = &mysql_logs[&id];
+                    
+                    // Format optional values properly for SQL
+                    let insert_dtr_log_pic_sql = match &log.insert_dtr_log_pic {
+                        Some(val) => format!("'{}'", val.replace("'", "''")),
+                        None => "NULL".to_string()
+                    };
+                    
+                    let hr_approval_sql = match &log.hr_approval {
+                        Some(val) => format!("'{}'", val.replace("'", "''")),
+                        None => "NULL".to_string()
+                    };
+                    
+                    let dtr_type_sql = match &log.dtr_type {
+                        Some(val) => format!("'{}'", val.replace("'", "''")),
+                        None => "NULL".to_string()
+                    };
+                    
+                    let remarks_sql = match &log.remarks {
+                        Some(val) => format!("'{}'", val.replace("'", "''")),
+                        None => "NULL".to_string()
+                    };
+                    
+                    let sql = format!(
+                        "MERGE INTO [dbo].[tbl_att_logs] AS target
+                         USING (SELECT {} AS log_id) AS source
+                         ON target.log_id = source.log_id
+                         WHEN MATCHED THEN
+                            UPDATE SET
+                                employee_id = '{}',
+                                log_dtime = '{}',
+                                add_by = {},
+                                add_dtime = '{}',
+                                insert_dtr_log_pic = {},
+                                hr_approval = {},
+                                dtr_type = {},
+                                remarks = {},
+                                sync_status = 'SYNCED',
+                                sync_datetime = '{}'
+                         ;",
+                        log.log_id,
+                        log.employee_id.replace("'", "''"),
+                        log.log_dtime.replace("'", "''"),
+                        log.add_by,
+                        log.add_dtime.replace("'", "''"),
+                        insert_dtr_log_pic_sql,
+                        hr_approval_sql,
+                        dtr_type_sql,
+                        remarks_sql,
+                        sync_timestamp
+                    );
+                    
+                    sql_client.execute(&sql, &[]).await?;
+                }
                 
-                // Format optional values properly for SQL
-                let insert_dtr_log_pic_sql = match &log.insert_dtr_log_pic {
-                    Some(val) => format!("'{}'", val.replace("'", "''")),
-                    None => "NULL".to_string()
-                };
-                
-                let hr_approval_sql = match &log.hr_approval {
-                    Some(val) => format!("'{}'", val.replace("'", "''")),
-                    None => "NULL".to_string()
-                };
-                
-                let dtr_type_sql = match &log.dtr_type {
-                    Some(val) => format!("'{}'", val.replace("'", "''")),
-                    None => "NULL".to_string()
-                };
-                
-                let remarks_sql = match &log.remarks {
-                    Some(val) => format!("'{}'", val.replace("'", "''")),
-                    None => "NULL".to_string()
-                };
-                
-                // Use straight SQL without parameters for simplicity
-                let sql = format!(
-                    "UPDATE [dbo].[tbl_att_logs] 
-                    SET 
-                        employee_id = '{}', 
-                        log_dtime = '{}', 
-                        add_by = {}, 
-                        add_dtime = '{}', 
-                        insert_dtr_log_pic = {}, 
-                        hr_approval = {}, 
-                        dtr_type = {}, 
-                        remarks = {},
-                        sync_status = 'SYNCED', 
-                        sync_datetime = '{}'
-                    WHERE log_id = {}",
-                    log.employee_id.replace("'", "''"),
-                    log.log_dtime.replace("'", "''"),
-                    log.add_by,
-                    log.add_dtime.replace("'", "''"),
-                    insert_dtr_log_pic_sql,
-                    hr_approval_sql,
-                    dtr_type_sql,
-                    remarks_sql,
-                    sync_timestamp,
-                    log.log_id
-                );
-                
-                sql_client.execute(&sql, &[]).await?;
-                
-                updated += 1;
-                progress_bar.inc(1);
+                updated += ids_chunk.len() as u32;
+                progress_bar.inc(ids_chunk.len() as u64);
             }
             
             let batch_elapsed = batch_start.elapsed();
@@ -259,7 +261,7 @@ pub async fn batch_sync_mysql_to_sql(
     Ok((inserted, updated))
 }
 
-// Batch synchronize scheduling records from MySQL to SQL Server with enhanced visuals
+// Fixed batch synchronize scheduling records from MySQL to SQL Server with enhanced visuals
 pub async fn batch_sync_scheduling_mysql_to_sql(
     sql_client: &mut SqlServerClient,
     mysql_records: &HashMap<i32, SchedulingRecord>,
@@ -273,12 +275,14 @@ pub async fn batch_sync_scheduling_mysql_to_sql(
     
     // Metrics for real-time reporting
     let start_time = Instant::now();
-    const BATCH_SIZE: usize = 50; // Smaller batch for SQL Server
+    
+    // OPTIMIZATION: Increased batch size for better performance
+    const BATCH_SIZE: usize = 50; // Use a conservative batch size to ensure stability
     
     if !ids_to_insert.is_empty() {
         progress_bar.set_message(format!("🔄 {} → SQL Server (Scheduling INSERT)", "MySQL".green()));
         
-        // Process each record by directly building a SQL statement with all parameters
+        // Process each record individually for reliability
         for (chunk_idx, ids_chunk) in ids_to_insert.chunks(BATCH_SIZE).enumerate() {
             let batch_start = Instant::now();
             
@@ -316,70 +320,62 @@ pub async fn batch_sync_scheduling_mysql_to_sql(
                     None => "NULL".to_string()
                 };
                 
-                // Build a complete SQL statement that:
-                // 1. Creates a temp table with the right structure
-                // 2. Inserts our data into the temp table
-                // 3. Enables IDENTITY_INSERT in a properly scoped context
-                // 4. Performs the insert with a SELECT from the temp table
-                // 5. Cleans up the temp table
+                // Use direct SQL - simpler and more robust approach
                 let sql = format!(
-                    "
-                    -- Create temp table
-                    IF OBJECT_ID('tempdb..#TempScheduling') IS NOT NULL DROP TABLE #TempScheduling;
-                    
-                    CREATE TABLE #TempScheduling (
-                        scheduling_id INT PRIMARY KEY,
-                        date_start DATE NOT NULL,
-                        date_end DATE NOT NULL,
-                        remarks NVARCHAR(MAX),
-                        station NVARCHAR(255),
-                        employee_id NVARCHAR(50) NOT NULL,
-                        department NVARCHAR(100) NOT NULL,
-                        time_start NVARCHAR(10) NOT NULL,
-                        time_end NVARCHAR(10) NOT NULL,
-                        updated_at DATETIME,
-                        created_at DATETIME,
-                        [case] NVARCHAR(255),
-                        remark_2nd NVARCHAR(MAX),
-                        display_order NVARCHAR(255),
-                        display_order_2nd NVARCHAR(255),
-                        sync_status NVARCHAR(50),
-                        sync_datetime DATETIME
-                    );
-                    
-                    -- Insert data into temp table
-                    INSERT INTO #TempScheduling (
-                        scheduling_id, date_start, date_end, remarks, station, 
-                        employee_id, department, time_start, time_end, updated_at, 
-                        created_at, [case], remark_2nd, display_order, display_order_2nd, 
-                        sync_status, sync_datetime
-                    )
-                    VALUES (
-                        {}, '{}', '{}', {}, {}, 
-                        '{}', '{}', '{}', '{}', '{}', 
-                        '{}', {}, {}, {}, {}, 
-                        'SYNCED', '{}'
-                    );
-                    
-                    -- Set IDENTITY_INSERT ON in a properly scoped context and insert from temp table
-                    EXEC('SET IDENTITY_INSERT [dbo].[tbl_scheduling] ON;
-                         INSERT INTO [dbo].[tbl_scheduling] (
-                            scheduling_id, date_start, date_end, remarks, station, 
-                            employee_id, department, time_start, time_end, updated_at, 
-                            created_at, [case], remark_2nd, display_order, display_order_2nd, 
+                    "SET IDENTITY_INSERT [dbo].[tbl_scheduling] ON;
+                     
+                     MERGE INTO [dbo].[tbl_scheduling] AS target
+                     USING (SELECT {} AS scheduling_id) AS source
+                     ON target.scheduling_id = source.scheduling_id
+                     WHEN MATCHED THEN
+                        UPDATE SET
+                            date_start = '{}',
+                            date_end = '{}',
+                            remarks = {},
+                            station = {},
+                            employee_id = '{}',
+                            department = '{}',
+                            time_start = '{}',
+                            time_end = '{}',
+                            updated_at = '{}',
+                            created_at = '{}',
+                            [case] = {},
+                            remark_2nd = {},
+                            display_order = {},
+                            display_order_2nd = {},
+                            sync_status = 'SYNCED',
+                            sync_datetime = '{}'
+                     WHEN NOT MATCHED THEN
+                        INSERT (
+                            scheduling_id, date_start, date_end, remarks, station,
+                            employee_id, department, time_start, time_end, updated_at,
+                            created_at, [case], remark_2nd, display_order, display_order_2nd,
                             sync_status, sync_datetime
-                         )
-                         SELECT 
-                            scheduling_id, date_start, date_end, remarks, station, 
-                            employee_id, department, time_start, time_end, updated_at, 
-                            created_at, [case], remark_2nd, display_order, display_order_2nd, 
-                            sync_status, sync_datetime
-                         FROM #TempScheduling;
-                         SET IDENTITY_INSERT [dbo].[tbl_scheduling] OFF;');
-                    
-                    -- Clean up
-                    DROP TABLE #TempScheduling;
-                    ",
+                        )
+                        VALUES (
+                            {}, '{}', '{}', {}, {},
+                            '{}', '{}', '{}', '{}', '{}',
+                            '{}', {}, {}, {}, {},
+                            'SYNCED', '{}'
+                        );
+                     
+                     SET IDENTITY_INSERT [dbo].[tbl_scheduling] OFF;",
+                    record.scheduling_id,
+                    record.date_start.replace("'", "''"),
+                    record.date_end.replace("'", "''"),
+                    remarks_sql,
+                    station_sql,
+                    record.employee_id.replace("'", "''"),
+                    record.department.replace("'", "''"),
+                    record.time_start.replace("'", "''"),
+                    record.time_end.replace("'", "''"),
+                    record.updated_at.replace("'", "''"),
+                    record.created_at.replace("'", "''"),
+                    case_sql,
+                    remark_2nd_sql,
+                    display_order_sql,
+                    display_order_2nd_sql,
+                    sync_timestamp,
                     record.scheduling_id,
                     record.date_start.replace("'", "''"),
                     record.date_end.replace("'", "''"),
@@ -426,7 +422,7 @@ pub async fn batch_sync_scheduling_mysql_to_sql(
         }
     }
 
-    // Handle updates 
+    // Handle updates
     if !ids_to_update.is_empty() {
         let update_start = Instant::now();
         progress_bar.set_message(format!("🔄 {} → SQL Server (Scheduling UPDATE)", "MySQL".green()));

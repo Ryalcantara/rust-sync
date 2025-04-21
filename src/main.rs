@@ -1,4 +1,4 @@
-// Enhanced src/main.rs with improved visualization
+// Optimized src/main.rs with direct status filtering approach
 
 use anyhow::Result;
 use colored::*;
@@ -11,7 +11,7 @@ mod ui;
 mod database;
 mod sync;
 
-// Use the correct direct imports instead of re-exports
+// Use the optimized imports
 use crate::database::schema::{
     add_columns_if_not_exist_sql_server, 
     add_columns_if_not_exist_mysql,
@@ -64,12 +64,12 @@ async fn main() -> Result<()> {
     // Print separator before starting sync operations
     println!("{}", "───────────────────────────────────────────────".bright_black());
     
-    // First, sync attendance logs
-    let fetch_spinner = create_spinner("📊 Preparing to fetch attendance logs...");
+    // First, sync attendance logs using optimized approach
+    let fetch_spinner = create_spinner("⚡ Preparing for optimized sync (pending/NULL records only)...");
     println!("{}", "┌─────────────────────────────────────────────────┐".bright_blue());
     println!("{} {} {}",
         "│".bright_blue(),
-        " 🔄 SYNCING ATTENDANCE LOGS                     ".bold().white().on_blue(),
+        " 🔄 SYNCING ATTENDANCE LOGS (OPTIMIZED)          ".bold().white().on_blue(),
         "│".bright_blue()
     );
     println!("{}", "└─────────────────────────────────────────────────┘".bright_blue());
@@ -93,11 +93,11 @@ async fn main() -> Result<()> {
     // Print separator between sync operations
     println!("{}", "───────────────────────────────────────────────".bright_black());
     
-    // Then, sync scheduling records
+    // Then, sync scheduling records using optimized approach
     println!("{}", "┌─────────────────────────────────────────────────┐".bright_blue());
     println!("{} {} {}",
         "│".bright_blue(),
-        " 🔄 SYNCING SCHEDULING RECORDS                  ".bold().white().on_blue(),
+        " 🔄 SYNCING SCHEDULING RECORDS (OPTIMIZED)       ".bold().white().on_blue(),
         "│".bright_blue()
     );
     println!("{}", "└─────────────────────────────────────────────────┘".bright_blue());
