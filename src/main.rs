@@ -1,5 +1,3 @@
-// Optimized src/main.rs with direct status filtering approach
-
 use anyhow::Result;
 use colored::*;
 use dotenv::dotenv;

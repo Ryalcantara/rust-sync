@@ -1,5 +1,3 @@
-// Optimized src/sync/engine.rs with direct status filtering
-
 use anyhow::Result;
 use colored::*;
 use futures_util::future::try_join;

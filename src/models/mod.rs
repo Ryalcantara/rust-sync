@@ -1,5 +1,3 @@
-// Corrected src/models/mod.rs file
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct AttendanceLog {
     pub log_id: i32,

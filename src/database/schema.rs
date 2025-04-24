@@ -1,5 +1,3 @@
-// Corrected src/database/schema.rs file
-
 use anyhow::Result;
 use mysql_async::prelude::*; 
 use crate::database::connection::SqlServerClient;

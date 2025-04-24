@@ -13,12 +13,19 @@ pub async fn connect_databases(
 ) -> Result<(SqlServerClient, mysql_async::Conn, String)> {
     let mut config = Config::new();
 
+    // Get SQL Server connection info from environment
     let sql_server_host = env::var("SQL_SERVER").context("SQL_SERVER env var not set")?;
     let sql_server_db = env::var("SQL_DB").context("SQL_DB env var not set")?;
+    
+    // Get SQL Server authentication credentials
+    let sql_server_user = env::var("SQL_USER").context("SQL_USER env var not set")?;
+    let sql_server_password = env::var("SQL_PASSWORD").context("SQL_PASSWORD env var not set")?;
 
     config.host(&sql_server_host);
     config.database(&sql_server_db);
-    config.authentication(AuthMethod::Integrated);
+    
+    // Use SQL Server Authentication instead of Windows Authentication
+    config.authentication(AuthMethod::sql_server(sql_server_user, sql_server_password));
     config.trust_cert();
     
     let tcp = TcpStream::connect(config.get_addr()).await?;
@@ -31,7 +38,7 @@ pub async fn connect_databases(
     let version: &str = row.get(0).unwrap();
     spinner.set_message(format!("Connected to SQL Server: {}", version));
 
-    // MySQL connection setup
+    // MySQL connection setup remains the same
     let username = env::var("HOSTINGER_USER").context("HOSTINGER_USER not set")?;
     let password = env::var("HOSTINGER_PASSWORD").context("HOSTINGER_PASSWORD not set")?;
     let host = env::var("HOSTINGER_HOST").context("HOSTINGER_HOST not set")?;

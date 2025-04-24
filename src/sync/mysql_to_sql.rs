@@ -1,5 +1,3 @@
-// Fixed src/sync/mysql_to_sql.rs with corrected temp table handling
-
 use anyhow::Result;
 use indicatif::ProgressBar;
 use std::collections::HashMap;

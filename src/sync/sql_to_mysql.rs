@@ -1,5 +1,3 @@
-// Optimized src/sync/sql_to_mysql.rs for faster performance
-
 use anyhow::Result;
 use indicatif::ProgressBar;
 use std::collections::HashMap;

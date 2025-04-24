@@ -1,5 +1,3 @@
-// src/database/sql_server.rs - Fixed version
-
 use anyhow::{Context, Result};
 use futures_util::TryStreamExt;
 use std::collections::HashMap;
